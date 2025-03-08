@@ -292,7 +292,7 @@ class WhatsAppMessage(
         /** The type of a WhatsApp message, whether it's a poll, a photo, a video or even someone reacting to your messages.
          *
          * The detection of those aren't perfect. I tried to get the best possible regexes to match without any false detections.
-         * For the detection functions look into [WhatsAppMessageType.getTypeByContent] or (special cases) [newParser] and [WhatsAppMessage] (init) */
+         * For the detection functions look into [WhatsAppMessageType.getTypeByContent] or (special cases) [StatusBarNotification.parseWhatsAppStatusBarNotification] and [WhatsAppMessage] (init) */
         val messageType: WhatsAppMessageType,
         /**
          * A message which already existed, which just got reacted / voted to

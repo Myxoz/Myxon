@@ -204,7 +204,6 @@ class SharedPrefsKeys {
         const val SNAPCHAT="snapchatDrawables"
         const val TELEGRAM="telegramMessage"
         const val WHATSAPP="whatsAppMessage"
-        const val OPTIMALWATERLEVEL="optimalWaterLevel"
         const val TIMEDAPPS="timesApps"
     }
 }
