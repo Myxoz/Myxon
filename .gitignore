@@ -1,0 +1,15 @@
+*.iml
+.gradle
+/local.properties
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+ENV.kt
+/.idea
+gradle
+/app/src/androidTest/java/com/myxoz/tame/
+/app/src/test/java/com/myxoz/tame/
+app/release
