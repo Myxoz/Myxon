@@ -96,6 +96,7 @@ import kotlin.math.max
 
 
 class AppDrawer(val prefs: SharedPreferences, val context: Context){
+    val iconMap: MutableMap<String, FetchingAppIcon?> = mutableMapOf()
     private val pm: PackageManager = context.packageManager
     private val hiddenPackages=listOf(
         "com.samsung.android.incallui", // Call UI / Not openable
@@ -125,13 +126,20 @@ class AppDrawer(val prefs: SharedPreferences, val context: Context){
                     it.packageName,
                     pm,
                     pm.getApplicationInfo(it.packageName, MATCH_UNINSTALLED_PACKAGES),
-                    prefs
+                    this,
+                    prefs = prefs
+                )
+            }
+            .also {
+                prefs.edit().putStringSet(
+                    SharedPrefsKeys.CACHEDAPPS,
+                    it.map {"${it.packageName};${it.label}"}.toSet()
                 )
             }
             .sortedBy { it.label }
             .sortedByDescending {
                 it.getTimesOpened(reusableTimesOpened)
-        }
+            }
 //            .flatMap { listOf(it,it,it,it) }
     }
     init { // In a CoroutineScope due to performance reasons
@@ -147,8 +155,14 @@ fun saveHiddenApps(prefs: SharedPreferences, hiddenApps: List<String>){
 }
 @Stable
 @Composable
-fun AppDrawerComposable(drawer: AppDrawer, modifier: Modifier,closeDrawer: ()->Unit) {
-    val allApps = remember { mutableStateListOf<App>().apply { drawer.allApps.get { clear(); addAll(it.sortedByDescending { it.getTimesOpened() }) } } }
+fun AppDrawerComposable(drawer: AppDrawer, cachedApps: List<App>, modifier: Modifier,closeDrawer: ()->Unit) {
+    val allApps = remember {
+        cachedApps.toMutableStateList().apply {
+            drawer.allApps.get {
+                clear(); addAll(it.sortedByDescending { it.getTimesOpened() })
+            }
+        }
+    }
     var selectionMode by remember { mutableStateOf(false) }
     val appsSelected = remember { mutableStateListOf<App>() }
     val hiddenApps = remember {
@@ -228,12 +242,18 @@ fun AppDrawerComposable(drawer: AppDrawer, modifier: Modifier,closeDrawer: ()->U
     }
     val configuration= LocalConfiguration.current
     val elementWidth = ((configuration.screenWidthDp * .9 - 30*2)/4).dp
-    allApps.filter { !hiddenApps.contains(it.packageName)}.chunked(4).forEach {
+    val visibleApps = allApps.filter { !hiddenApps.contains(it.packageName)}.chunked(4)
+    visibleApps.forEachIndexed { i, it ->
         Row(modifier.fillMaxWidth()){
             it.forEach {
                 val sub = SingleSubscription<Boolean>()
                 selectionModeMap[it.packageName] = sub
-                AppComposable(it, elementWidth, AppDrawer.defaultDrawable, appsSelected.contains(it), { hold(it) }, { tap(it) }, sub)
+                AppComposable(it, Modifier.weight(1f), AppDrawer.defaultDrawable, appsSelected.contains(it), { hold(it) }, { tap(it) }, sub)
+            }
+            if(i == visibleApps.size-1){
+                repeat(4-it.size){
+                    Spacer(Modifier.weight(1f))
+                }
             }
         }
     }
@@ -244,30 +264,68 @@ fun AppDrawerComposable(drawer: AppDrawer, modifier: Modifier,closeDrawer: ()->U
             .height(1.dp)
             .background(Colors.TERTIARY_FONT, CircleShape))
     Spacer(modifier.height(20.dp))
-    allApps.filter { hiddenApps.contains(it.packageName)}.chunked(4).forEach {
+    val hiddenAppList = allApps.filter { hiddenApps.contains(it.packageName)}.chunked(4)
+    hiddenAppList.forEachIndexed { i, it ->
         Row(modifier.fillMaxWidth()){
             it.forEach {
                 val sub = SingleSubscription<Boolean>()
                 selectionModeMap[it.packageName] = sub
-                AppComposable(it, elementWidth, AppDrawer.defaultDrawable, appsSelected.contains(it), { hold(it) }, { tap(it) }, sub)
+                AppComposable(it, Modifier.weight(1f), AppDrawer.defaultDrawable, appsSelected.contains(it), { hold(it) }, { tap(it) }, sub)
+            }
+            if(i == hiddenAppList.size-1){
+                repeat(4-it.size){
+                    Spacer(Modifier.weight(1f))
+                }
             }
         }
     }
 }
-class App(val packageName: String, private val pm: PackageManager, private val info: ApplicationInfo, private val prefs: SharedPreferences){
+class FetchingAppIcon(
+    val subscription: Subscription<ImageBitmap?, App>?,
+    val icon: ImageBitmap?
+)
+class App(
+    val packageName: String,
+    private val pm: PackageManager,
+    private val info: ApplicationInfo?,
+    private val appDrawer: AppDrawer,
+    val label: String=info?.loadLabel(pm)?.toString()?:"",
+    private val prefs: SharedPreferences
+){
     var icon: ImageBitmap?=null
-    val label: String=info.loadLabel(pm).toString()
     private val timeDownTicking=30*60*1000
     private val timeToOpen=5*60*1000
     private var hasIconRendered=false
     val iconPromise=Promise{
-        icon=asyncAppIcon()
-        delay(1000)
-        icon
+        if(!appDrawer.iconMap.contains(packageName)){
+            val finalSubscription = Subscription<ImageBitmap?, App>()
+            appDrawer.iconMap[packageName] = FetchingAppIcon(
+                finalSubscription,
+                null
+            )
+            icon=asyncAppIcon()
+            appDrawer.iconMap[packageName] = FetchingAppIcon(
+                null,
+                icon
+            )
+            finalSubscription.send(icon)
+            icon
+        } else {
+            (appDrawer.iconMap[packageName]!!).let {
+                if(it.icon!=null) return@let it.icon
+                val deferredValue: CompletableDeferred<ImageBitmap?> = CompletableDeferred()
+                it.subscription!!.subscribe(
+                    this,
+                ) {
+                    deferredValue.complete(it)
+                }
+                deferredValue.await()
+            }
+        }
     }.apply { start() }
     private fun asyncAppIcon(): ImageBitmap? {
         try {
-            val drawable = info.loadIcon(pm)
+            val drawable = pm.getApplicationIcon(packageName)
             if (drawable is AdaptiveIconDrawable) {
                 val foreground: Drawable = drawable.monochrome?.apply {
                     setTint(-0x1 /*White*/)
@@ -384,7 +442,7 @@ class App(val packageName: String, private val pm: PackageManager, private val i
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun AppComposable(app: App, width: Dp, defaultDrawable: ImageBitmap, selected: Boolean, hold: ()->Unit, tap: ()->Unit, singleSubscription: SingleSubscription<Boolean>): Unit{
+fun AppComposable(app: App, modifier: Modifier, defaultDrawable: ImageBitmap, selected: Boolean, hold: ()->Unit, tap: ()->Unit, singleSubscription: SingleSubscription<Boolean>): Unit{
     var appIcon: ImageBitmap? by remember(app.packageName) {
         mutableStateOf(app.iconPromise.getOrNull())
     }
@@ -404,15 +462,17 @@ fun AppComposable(app: App, width: Dp, defaultDrawable: ImageBitmap, selected: B
         }
     }
 
-    Column(verticalArrangement = Arrangement.SpaceAround,horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier
-        .padding(0.dp, 10.dp)
-        .size(width, 80.dp)
-        .combinedClickable(
-            indication = null,
-            interactionSource = null,
-            onLongClick = if (appIcon != null) hold else { -> },
-            onClick = if (appIcon != null) tap else { -> }
-        )
+    Column(
+        verticalArrangement = Arrangement.SpaceAround,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier
+            .padding(0.dp, 10.dp)
+            .combinedClickable(
+                indication = null,
+                interactionSource = null,
+                onLongClick = if (appIcon != null) hold else { -> },
+                onClick = if (appIcon != null) tap else { -> }
+            )
     ) {
         if(appIcon!=null){
             if(isSelected)
@@ -458,7 +518,15 @@ fun AppComposable(app: App, width: Dp, defaultDrawable: ImageBitmap, selected: B
                             }
                         }
                 )
+        } else {
+            Box(
+                Modifier
+                    .size(50.dp)
+                    .clip(CircleShape)
+                    .background(Colors.SECONDARY)
+            )
         }
+        Spacer(Modifier.height(10.dp))
         Text(app.label, color = Colors.FONT, overflow = TextOverflow.Ellipsis, maxLines = 1)
     }
 }

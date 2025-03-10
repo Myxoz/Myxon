@@ -354,8 +354,8 @@ fun Search(context: Context, prefs: SharedPreferences, appDrawerSubscription: Su
                 val elementWidth = ((LocalConfiguration.current.screenWidthDp * .9 - 30*2 - 13*2)/4).dp
                 Text("Installed Apps:", color = Colors.SECONDARY_FONT)
                 Row {
-                    allAppResults.forEach{
-                        AppComposable(it, elementWidth, AppDrawer.defaultDrawable, false, {}, {it.launch(context)}, SingleSubscription())
+                    allAppResults.take(5).forEach{
+                        AppComposable(it, Modifier.weight(1f), AppDrawer.defaultDrawable, false, {}, {it.launch(context)}, SingleSubscription())
                     }
                 }
             }
@@ -446,7 +446,7 @@ fun InstantAnswerComposable(instantAnswer: InstantAnswer, searchEngine: SearchEn
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Open first search result",
+                    Text("Open first result",
                         style = MaterialTheme.typography.titleMedium.copy(Colors.LINK),
                         modifier = Modifier
                             .background(Colors.LINK.copy(.1f), CircleShape)

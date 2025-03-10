@@ -6,6 +6,7 @@ import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.Canvas
@@ -46,6 +47,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.times
 import com.myxoz.myxon.notification.NotificationHub
 import com.myxoz.myxon.search.Search
 import kotlinx.coroutines.delay
@@ -69,14 +71,15 @@ class MainActivity : ComponentActivity() {
     private val appDrawerSubscription = Subscription<Boolean, String>()
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(0)
+        )
         mediaPlayer= MediaPlayer(applicationContext)
         mPrefs = getSharedPreferences(localClassName, MODE_PRIVATE)
         notificationHub = NotificationHub(mPrefs)
         widgetIsland = WidgetIsland(applicationContext, mPrefs)
         time=Time()
         appDrawer= AppDrawer(mPrefs, applicationContext)
-
         registerReceiver(notificationHub.notificationReceiver, IntentFilter(NotificationHub.INTENTNAME), RECEIVER_EXPORTED)
         registerReceiver(this.widgetIsland.batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         registerReceiver(this.widgetIsland.batteryReceiver, IntentFilter(Intent.ACTION_POWER_CONNECTED))
@@ -151,18 +154,18 @@ class MainActivity : ComponentActivity() {
                                                                     )
                                             ) / 6)  // Elementcount +1
                                     ),
-                        innerPadding.calculateTopPadding().px(density),
+                        0f,
                         {
                             Modifier
                                 .background(
                                     Color(0xFF181818).copy(alpha = it),
-                                    RoundedCornerShape(40.dp, 40.dp)
+                                    RoundedCornerShape((1-it/2)*40.dp,(1-it/2)*40.dp)
                                 )
-                                .fillMaxWidth(.9f)
+                                .fillMaxWidth(0.8f+it/5)
                                 .fillMaxHeight()
                                 .padding(
                                     30.dp,
-                                    10.dp,
+                                    innerPadding.calculateTopPadding(),
                                     30.dp,
                                     innerPadding.calculateBottomPadding() + 20.dp
                                 )
@@ -173,7 +176,20 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                         { progess ->
-                            AppDrawerComposable(appDrawer, Modifier.alpha(progess)) { }
+                            val packageManager = packageManager
+                            AppDrawerComposable(appDrawer,
+                                (mPrefs.getStringSet(SharedPrefsKeys.CACHEDAPPS,null)?: setOf()).map {
+                                    App(
+                                        it.substringBefore(";"),
+                                        packageManager,
+                                        null,
+                                        appDrawer,
+                                        it.substringAfter(";"),
+                                        mPrefs
+                                    )
+                                },
+                                Modifier.alpha(progess)
+                            ) { }
                         }, appDrawerSubscription
                     )
                 } else {
@@ -198,6 +214,7 @@ class MainActivity : ComponentActivity() {
 }
 class SharedPrefsKeys {
     companion object{
+        const val CACHEDAPPS="cashedapps"
         const val INSTANTANSWER="instantanswer"
         const val SEARCHENGINE="searchengine"
         const val PACKAGEOPENED="timesOpenedByPackage"
