@@ -5,7 +5,6 @@ import android.content.Intent.FLAG_ACTIVITY_NEW_TASK
 import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -150,7 +149,7 @@ class MainActivity : ComponentActivity() {
                                                                                     density
                                                                                 )
                                                                     )
-                                            ) / 6).apply { Toast.makeText(applicationContext, (this/density.density).toString(), Toast.LENGTH_SHORT).show() } // Elementcount +1
+                                            ) / 6)  // Elementcount +1
                                     ),
                         innerPadding.calculateTopPadding().px(density),
                         {
@@ -170,7 +169,7 @@ class MainActivity : ComponentActivity() {
                         }, {
                             Spacer(Modifier.height(20.dp))
                             Box(it) {
-                                Search(applicationContext, appDrawerSubscription, appDrawer)
+                                Search(applicationContext, mPrefs, appDrawerSubscription, appDrawer)
                             }
                         },
                         { progess ->
@@ -199,6 +198,8 @@ class MainActivity : ComponentActivity() {
 }
 class SharedPrefsKeys {
     companion object{
+        const val INSTANTANSWER="instantanswer"
+        const val SEARCHENGINE="searchengine"
         const val PACKAGEOPENED="timesOpenedByPackage"
         const val HIDDENAPPS="hiddenApps"
         const val SNAPCHAT="snapchatDrawables"

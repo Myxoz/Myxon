@@ -33,5 +33,6 @@ class Colors {
 //        val CHARGING=Color(0xFF00FF00)
         val BLACK=Color(0xFF000000)
         val APPSELECTED=Color(0xFF2E992E)
+        val LINK = Color(0xFF0073FF)
     }
 }

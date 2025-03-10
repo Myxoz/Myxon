@@ -691,6 +691,9 @@ fun Dp.px(density: Density): Float{
 fun TextUnit.px(density: Density): Float{
     return density.fontScale*density.density*value
 }
+fun Float.dp(density: Density): Dp{
+    return (this/density.density).dp
+}
 fun Modifier.circularBackgroundWithFraction(
     fraction: Float,
     circleColor: Color

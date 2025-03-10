@@ -1,16 +1,26 @@
 package com.myxoz.myxon.search
 
+import android.app.SearchManager
 import android.content.Context
 import android.content.Intent
+import android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK
 import android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+import android.content.SharedPreferences
 import android.content.pm.PackageManager.NameNotFoundException
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.AdaptiveIconDrawable
+import android.net.Uri
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,16 +31,25 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,27 +57,38 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.myxoz.myxon.AppComposable
 import com.myxoz.myxon.AppDrawer
 import com.myxoz.myxon.Colors
 import com.myxoz.myxon.Promise
+import com.myxoz.myxon.SharedPrefsKeys
 import com.myxoz.myxon.SingleSubscription
 import com.myxoz.myxon.Subscription
+import com.myxoz.myxon.dp
+import com.myxoz.myxon.px
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.net.HttpURLConnection
 import java.net.URL
@@ -85,12 +115,77 @@ Lens:
 In App
 
 */
+class SearchEngine(
+    val name: String,
+    val autocompleteURL: String,
+    val packageName: String,
+    val instantResults: ((String, (InstantAnswer)->Unit)->Unit)? = null,
+    val getResults: (String)->List<String>
+)
+class InstantAnswer(val title: String, val description: String, val url: String)
+
+private fun String?.nullIfBlank(): String? = if(this?.isBlank()==true) null else this
+
+val searchEngines = listOf(
+    SearchEngine(
+        "Google",
+        "https://www.google.com/complete/search?q={s}&client=chrome",
+        "com.google.android.googlequicksearchbox",
+    ){
+        Json.parseToJsonElement(it).jsonArray.getOrNull(1)?.jsonArray?.map { p -> p.jsonPrimitive.content }?: listOf()
+    },
+    SearchEngine(
+        "DuckDuckGo",
+        "https://ac.duckduckgo.com/ac/?q={s}",
+        "com.duckduckgo.mobile.android",
+        { query, response ->
+            fetch("https://api.duckduckgo.com/?q=${query}&format=json").get {
+                val text = it?:return@get
+                Json.parseToJsonElement(text).jsonObject.let {
+                    response(
+                        InstantAnswer(
+                            it.get("Heading")?.jsonPrimitive?.content?.nullIfBlank()?:return@get,
+                            it.get("AbstractText")?.jsonPrimitive?.contentOrNull?.nullIfBlank()?:
+                                it.get("Abstract")?.jsonPrimitive?.contentOrNull.nullIfBlank()?:
+                                it.get("RelatedTopics")?.jsonArray?.getOrNull(0)?.jsonObject?.get("Text")?.jsonPrimitive?.contentOrNull?.let { "(First related):\n$it" }?:
+                                return@get,
+                            "https://duckduckgo.com/?q=${query} !"
+                        )
+                    )
+                }
+            }
+        }
+    ){
+        Json.parseToJsonElement(it).jsonArray.mapNotNull{it.jsonObject.get("phrase")?.jsonPrimitive?.content}
+    },
+)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun Search(context: Context, appDrawerSubscription: Subscription<Boolean, String>, drawer: AppDrawer){
+fun Search(context: Context, prefs: SharedPreferences, appDrawerSubscription: Subscription<Boolean, String>, drawer: AppDrawer){
     var isSearching by remember { mutableStateOf(false) }
     val results = remember { mutableStateListOf<String>() }
     val keyboardController = LocalSoftwareKeyboardController.current
     var query by remember { mutableStateOf("") }
+    var instantAnswer: InstantAnswer? by remember { mutableStateOf(null) }
+    var isInstantAnswerEnabled: Boolean by remember { mutableStateOf(
+        prefs.getBoolean(SharedPrefsKeys.INSTANTANSWER, false)
+    )}
+    var didSelectSearchEngine by remember {
+        mutableStateOf(
+            prefs.getString(SharedPrefsKeys.SEARCHENGINE, null)!=null
+        )
+    }
+    var searchEngine: SearchEngine? by remember {
+        mutableStateOf(
+            prefs.getString(SharedPrefsKeys.SEARCHENGINE,null)?.let { defSearchEngine ->
+                if(defSearchEngine=="NONE"){ // Specifically chose not to use a search engine
+                    null
+                } else {
+                    searchEngines.firstOrNull { it.name == defSearchEngine}
+                }
+            }
+        )
+    }
     val focusManager = LocalFocusManager.current
     appDrawerSubscription.subscribe("search") {if(!it) {
         results.clear()
@@ -99,23 +194,20 @@ fun Search(context: Context, appDrawerSubscription: Subscription<Boolean, String
         keyboardController?.hide()
     } }
     var searchIcon: ImageBitmap? by remember { mutableStateOf(null) }
-    var searchMachineInstalled by remember { mutableStateOf("") }
-    LaunchedEffect("fetchSearchIcon") {
+    LaunchedEffect(searchEngine) {
         val pm = context.packageManager
-        listOf(Pair("com.google.android.googlequicksearchbox", "Google")).forEach {
-            try {
-                val icon = pm.getApplicationIcon(it.first)
-                if(icon is AdaptiveIconDrawable){
-                    val foreground = icon.monochrome?.apply { setTint(-0x1 /*White*/) } ?: return@forEach
-                    val size=128; val padding=50
-                    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.RGBA_1010102)
-                    foreground.setBounds(-padding,-padding,size+padding,size+padding)
-                    foreground.draw(Canvas(bitmap))
-                    searchIcon = bitmap.asImageBitmap()
-                    searchMachineInstalled = it.second
-                }
-            } catch (_: NameNotFoundException) { }
-        }
+        val nnSearchEngine = searchEngine ?: return@LaunchedEffect
+        try {
+            val icon = pm.getApplicationIcon(nnSearchEngine.packageName)
+            if(icon is AdaptiveIconDrawable){
+                val foreground = icon.monochrome?.apply { setTint(-0x1 /*White*/) } ?: return@LaunchedEffect
+                val size=128; val padding=40
+                val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.RGBA_1010102)
+                foreground.setBounds(-padding,-padding,size+padding,size+padding)
+                foreground.draw(Canvas(bitmap))
+                searchIcon = bitmap.asImageBitmap()
+            }
+        } catch (_: NameNotFoundException) { }
     }
     Column (
         Modifier
@@ -127,14 +219,19 @@ fun Search(context: Context, appDrawerSubscription: Subscription<Boolean, String
             .animateContentSize()
     ) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically){
-            val curIcon = searchIcon
-            if(curIcon!=null) {
+            val nnIcon = searchIcon
+            if(nnIcon!=null) {
                 Image(
-                    curIcon,
+                    nnIcon,
                     "Search Icon",
                     Modifier
                         .size(24.dp)
-                        .clickable { startGoogle(GoogleActivity.Main, context) }
+                        .combinedClickable(onLongClick = {
+                            searchEngine=null
+                            didSelectSearchEngine=false
+                            isSearching=true
+                            appDrawerSubscription.send(true)
+                        }) { startSearchEngineOrBrowser(null, searchEngine, context) }
                 )
             } else {
                 Icon(
@@ -143,7 +240,10 @@ fun Search(context: Context, appDrawerSubscription: Subscription<Boolean, String
                     tint= Color.White,
                     modifier = Modifier
                         .size(24.dp)
-                        .clickable { startGoogle(GoogleActivity.Main, context) }
+                        .combinedClickable(onLongClick = {
+                            searchEngine=null
+                            didSelectSearchEngine=false
+                        }){}
                 )
             }
             Spacer(Modifier.width(10.dp))
@@ -156,11 +256,17 @@ fun Search(context: Context, appDrawerSubscription: Subscription<Boolean, String
                     query,
                     {
                         query=it
-                        fetch("https://www.google.com/complete/search?q=$query&client=chrome").get {response ->
+                        val nnSE = searchEngine ?: return@BasicTextField
+                        fetch(nnSE.autocompleteURL.replace("{s}",it)).get {response ->
                             response?:return@get
-                            val responses = Json.parseToJsonElement(response).jsonArray.getOrNull(1)?.jsonArray?.map { p -> p.jsonPrimitive.content }?: listOf()
+                            val responses = nnSE.getResults(response)
                             results.clear()
                             results.addAll(responses)
+                            nnSE.instantResults?.let {
+                                it(responses.getOrNull(0)?:return@let){
+                                    instantAnswer=it
+                                }
+                            }
                         }
                     },
                     Modifier
@@ -181,11 +287,21 @@ fun Search(context: Context, appDrawerSubscription: Subscription<Boolean, String
                     ),
                     cursorBrush = SolidColor(Colors.FONT),
                     keyboardActions = KeyboardActions(onDone = {
-                        startGoogle(GoogleActivity.Search, context, query)
+                        startSearchEngineOrBrowser(query, searchEngine, context)
                     }),
                     decorationBox = { content ->
                         if(!isSearching){
-                            Text("Search ${if(searchMachineInstalled.isNotEmpty()) "with $searchMachineInstalled" else ""}", fontSize = 18.sp, color = Colors.SECONDARY_FONT)
+                            Text(
+                                if(!didSelectSearchEngine) {
+                                    "Select search engine"
+                                } else if(searchEngine==null) {
+                                    "Search apps"
+                                } else {
+                                    "Search apps or ${searchEngine?.name}"
+                                },
+                                fontSize = 18.sp,
+                                color = Colors.SECONDARY_FONT
+                            )
                         } else {
                             content()
                         }
@@ -195,6 +311,43 @@ fun Search(context: Context, appDrawerSubscription: Subscription<Boolean, String
             Spacer(Modifier.width(10.dp))
         }
         val allAppResults=drawer.allApps.getOrNull()?.filter { it.label.lowercase().contains(query.lowercase()) }
+        if(isSearching && !didSelectSearchEngine) {
+            Spacer(Modifier.height(20.dp))
+            Text("Select search engine", color = Colors.SECONDARY_FONT)
+            Column(Modifier.fillMaxWidth()) {
+                (searchEngines + listOf(null)).forEach {
+                    SearchEngineOption(
+                        it
+                    ){
+                        didSelectSearchEngine=true
+                        searchEngine=it
+                        searchIcon=null
+                        instantAnswer=null
+                        results.clear()
+                        prefs
+                            .edit()
+                            .putString(SharedPrefsKeys.SEARCHENGINE, it.name)
+                            .apply()
+                    }
+                }
+                Row(
+                    Modifier.
+                        fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Instant answers (IA) in results",
+                        style = MaterialTheme.typography.labelLarge.copy(Colors.FONT),
+                    )
+                    Switch(isInstantAnswerEnabled, {isInstantAnswerEnabled=it; prefs.edit().putBoolean(SharedPrefsKeys.INSTANTANSWER, it).apply()})
+                }
+                Text(
+                    "You can always change this by holding down on the search icon",
+                    style = MaterialTheme.typography.titleSmall.copy(Colors.SECONDARY_FONT)
+                )
+            }
+        }
         if(isSearching && query.isNotEmpty()) {
             if(!allAppResults.isNullOrEmpty()) {
                 Spacer(Modifier.height(20.dp))
@@ -208,16 +361,20 @@ fun Search(context: Context, appDrawerSubscription: Subscription<Boolean, String
             }
             if(results.isNotEmpty()){
                 Spacer(Modifier.height(20.dp))
-                Text("Search results:", color = Colors.SECONDARY_FONT)
+                Text("${searchEngine?.name} results:", color = Colors.SECONDARY_FONT)
                 Column {
+                    if(isInstantAnswerEnabled){
+                        instantAnswer?.also{
+                            searchEngine?.also { se ->
+                                InstantAnswerComposable(it, se, context)
+                            }
+                        }
+                    }
                     results.forEach { Text(it, color = Colors.FONT, fontSize = 20.sp, modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
-                            startGoogle(
-                                GoogleActivity.Search,
-                                context,
-                                query = it
-                            ); Promise { delay(2000); appDrawerSubscription.send(false) }
+                            startSearchEngineOrBrowser(it, searchEngine, context)
+                            Promise { delay(2000); appDrawerSubscription.send(false) }
                         }
                         .padding(5.dp, 10.dp, 0.dp, 10.dp)) }
                 }
@@ -225,27 +382,174 @@ fun Search(context: Context, appDrawerSubscription: Subscription<Boolean, String
         }
     }
 }
-enum class GoogleActivity{
-    Search, Main
+
+@Composable
+fun InstantAnswerComposable(instantAnswer: InstantAnswer, searchEngine: SearchEngine, context: Context) {
+    var isExpanded by remember { mutableStateOf(false) }
+    val textMeasurer = rememberTextMeasurer()
+    var linesAmount by remember { mutableIntStateOf(3) }
+    val lineHeight = MaterialTheme.typography.titleSmall.fontSize.px(LocalDensity.current)
+    var oneLineHeight by remember { mutableFloatStateOf(lineHeight) }
+    val textHeight by animateFloatAsState(
+        if(isExpanded) oneLineHeight*linesAmount else if(linesAmount>=3) 3f*oneLineHeight else lineHeight*linesAmount,
+        spring(stiffness = Spring.StiffnessMedium)
+    )
+    println("$lineHeight $linesAmount $textHeight")
+    Surface(
+        {
+            startSearchEngineOrBrowser(instantAnswer.title, searchEngine, context)
+        },
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 10.dp),
+        color = Colors.SECONDARY,
+        shape = RoundedCornerShape(20.dp)
+    ) {
+        Column(
+            Modifier
+                .padding(15.dp),
+        ){
+            Text(
+                instantAnswer.title,
+                style = MaterialTheme.typography.headlineSmall.copy(Colors.FONT),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(10.dp))
+            val smallTitle = MaterialTheme.typography.titleSmall
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onGloballyPositioned { layoutCoordinates ->
+                        val result = textMeasurer.measure(
+                            instantAnswer.description,
+                            style = smallTitle,
+                            constraints = Constraints.fixedWidth(layoutCoordinates.size.width)
+                        )
+                        linesAmount = result.lineCount
+                        oneLineHeight = result.size.height / linesAmount.toFloat()
+                    }
+            ) {
+                Text(
+                    instantAnswer.description,
+                    Modifier.height(textHeight.dp(LocalDensity.current)),
+                    style = MaterialTheme.typography.titleSmall.copy(Colors.SECONDARY_FONT),
+                    overflow = if (isExpanded) TextOverflow.Clip else TextOverflow.Ellipsis
+                )
+            }
+
+            if (linesAmount > 3) {
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    Modifier
+                        .fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Open first search result",
+                        style = MaterialTheme.typography.titleMedium.copy(Colors.LINK),
+                        modifier = Modifier
+                            .background(Colors.LINK.copy(.1f), CircleShape)
+                            .clip(CircleShape)
+                            .clickable(
+                                remember { MutableInteractionSource() }, remember { ripple() }
+                            ) {
+                                openBrowser(instantAnswer.url, context)
+                            }
+                            .padding(10.dp, 5.dp)
+                    )
+                    Row(
+                        Modifier
+                            .clip(CircleShape)
+                            .clickable {
+                                isExpanded = !isExpanded
+                            }
+                            .padding(10.dp, 5.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ){
+                        Text(
+                            "Show ${if (isExpanded) "less" else "more"}",
+                            style = MaterialTheme.typography.titleMedium.copy(Colors.FONT),
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Icon(
+                            Icons.Rounded.KeyboardArrowDown,
+                            "Show more",
+                            Modifier
+                                .rotate(
+                                    (textHeight-3f*oneLineHeight)/(oneLineHeight*(linesAmount-3f))*180f
+                                ),
+                            Colors.FONT
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
-fun startGoogle(launch: GoogleActivity, context: Context, query: String?=null){
-    when(launch){
-        GoogleActivity.Main -> {
-            val intent=Intent("android.intent.action.MAIN")
-            intent.setPackage("com.google.android.googlequicksearchbox")
-            intent.addCategory("android.intent.category.INFO")
-            intent.setFlags(FLAG_ACTIVITY_NEW_TASK)
-            intent.setClassName("com.google.android.googlequicksearchbox","com.google.android.googlequicksearchbox.GoogleAppImplicitMainInfoGatewayInternal")
-            context.startActivity(intent)
+
+fun openBrowser(url: String, context: Context) {
+    val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+    browserIntent.addFlags(FLAG_ACTIVITY_NEW_TASK)
+    context.startActivity(browserIntent)
+}
+
+@Composable
+fun SearchEngineOption(searchEngine: SearchEngine?, setAsSearchEngine: (SearchEngine) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ){
+        Text(
+            searchEngine?.name?.let {
+                if(searchEngine.instantResults ==null){
+                    "$it (No support for IA)"
+                } else {
+                    it
+                }
+            }?:"None",
+            style = MaterialTheme.typography.titleMedium.copy(Colors.FONT)
+        )
+        FilledTonalButton(
+            {
+                setAsSearchEngine(searchEngine?:SearchEngine("NONE","","",null,{ listOf() }))
+            }
+        ) { Text(
+            "Set",
+            style = MaterialTheme.typography.titleSmall
+        )}
+    }
+}
+
+fun startSearchEngineOrBrowser(
+    query: String?,
+    searchEngine: SearchEngine?,
+    context: Context
+) {
+    val packageManager = context.packageManager
+    if(query==null){
+        context.startActivity(packageManager.getLaunchIntentForPackage(searchEngine!!.packageName))
+    } else {
+        val launchDefaultSearchProvider = if(searchEngine!=null) {
+            try {
+                packageManager.getPackageInfo(searchEngine.packageName, 0);
+                false
+            } catch (e: NameNotFoundException) {
+                true
+            }
+        } else {
+            true
         }
-        GoogleActivity.Search -> {
-            val queryString = query?:"Moin"
-            val intent = Intent(Intent.ACTION_WEB_SEARCH)
-            intent.setClassName("com.google.android.googlequicksearchbox", "com.google.android.googlequicksearchbox.SearchActivity")
-            intent.putExtra("query", queryString)
-            intent.setFlags(FLAG_ACTIVITY_NEW_TASK)
-            context.startActivity(intent)
+        val intent = if(launchDefaultSearchProvider || searchEngine==null){
+            Intent(Intent.ACTION_WEB_SEARCH)
+        } else {
+            Intent(Intent.ACTION_WEB_SEARCH).setPackage(searchEngine.packageName)
         }
+        intent.putExtra(SearchManager.QUERY, query)
+        intent.setFlags(FLAG_ACTIVITY_NEW_TASK or FLAG_ACTIVITY_CLEAR_TASK)
+        context.startActivity(intent)
     }
 }
 fun fetch(fetchURL: String): Promise<String?> {
