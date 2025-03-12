@@ -134,7 +134,7 @@ class AppDrawer(val prefs: SharedPreferences, val context: Context){
                 prefs.edit().putStringSet(
                     SharedPrefsKeys.CACHEDAPPS,
                     it.map {"${it.packageName};${it.label}"}.toSet()
-                )
+                ).apply()
             }
             .sortedBy { it.label }
             .sortedByDescending {
