@@ -133,6 +133,7 @@ class MainActivity : ComponentActivity() {
                     }
                     DraggableMenu(screenHeight.px(density) -
                             (
+                                    innerPadding.calculateTopPadding().px(density)+
                                     50.dp.px(density) +
                                             ((
                                                     screenHeight.px(density) -
